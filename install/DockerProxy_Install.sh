@@ -26,7 +26,7 @@ cat << EOF
 EOF
 
 echo "----------------------------------------------------------------------------------------------------------"
-echo -e "\033[32mVPS 推荐\033[0m(\033[34mRackNerd 高性价比便宜VPS\033[0m)：\033[34;4mhttps://my.racknerd.com/aff.php?aff=12151\033[0m"
+echo -e "\033[32mVPS 推荐\033[0m(\033[34mRackNerd 高性价比便宜VPS\033[0m)：\033[34;4m https://dqzboy.github.io/proxyui/racknerd \033[0m"
 echo "----------------------------------------------------------------------------------------------------------"
 echo
 echo
@@ -77,6 +77,60 @@ function SEPARATOR() {
     echo -e "${INFO}${BOLD}${LIGHT_BLUE}======================== ${1} ========================${RESET}"
 }
 
+
+SPINNER_CHARS=('⣾' '⣽' '⣻' '⢿' '⡿' '⣟' '⣯' '⣷')
+SPINNER_DELAY=0.1
+
+function cleanup() {
+    trap - SIGINT SIGTERM
+    stop_spinner
+    echo
+    exit 1
+}
+
+function start_spinner() {
+    local msg="$1"
+    local temp_dir="/tmp/spinner"
+    local pid_file="${temp_dir}/pid"
+    local msg_file="${temp_dir}/message"
+    mkdir -p "$temp_dir"
+    echo "$msg" > "$msg_file"
+    trap cleanup SIGINT SIGTERM
+    (
+        trap 'exit 0' TERM
+        local i=0
+        while true; do
+            if [ -f "$msg_file" ]; then
+                msg=$(cat "$msg_file")
+                printf "\r${LIGHT_BLUE}%s${RESET} ${LIGHT_YELLOW}%s${RESET} " "${SPINNER_CHARS[i]}" "$msg"
+                i=$(( (i + 1) % ${#SPINNER_CHARS[@]} ))
+                sleep $SPINNER_DELAY
+            else
+                exit 0
+            fi
+        done
+    ) & disown
+    echo $! > "$pid_file"
+}
+
+function stop_spinner() {
+    local temp_dir="/tmp/spinner"
+    local pid_file="${temp_dir}/pid"
+    local msg_file="${temp_dir}/message"
+    
+    if [ -f "$pid_file" ]; then
+        local spinner_pid=$(cat "$pid_file")
+        rm -f "$msg_file"
+        rm -f "$pid_file"
+        kill -TERM "$spinner_pid" 2>/dev/null
+        wait "$spinner_pid" 2>/dev/null
+        printf "\r%-60s\r" " "
+        echo -ne "\033[0m"
+    fi
+
+    rm -rf "$temp_dir" 2>/dev/null
+    trap - SIGINT SIGTERM
+}
 
 # 检查是否以root权限运行
 if [[ $EUID -ne 0 ]]; then
@@ -214,10 +268,10 @@ function CHECK_PACKAGE_MANAGER() {
         package_manager="dnf"
     elif command -v yum &> /dev/null; then
         package_manager="yum"
-    elif command -v apt-get &> /dev/null; then
-        package_manager="apt-get"
     elif command -v apt &> /dev/null; then
         package_manager="apt"
+    elif command -v apt-get &> /dev/null; then
+        package_manager="apt-get"
     else
         ERROR "不受支持的软件包管理器."
         exit 1
@@ -370,43 +424,35 @@ if [ "$package_manager" = "dnf" ] || [ "$package_manager" = "yum" ]; then
             INFO "${LIGHT_GREEN}已经安装${RESET} $package ..."
         else
             INFO "${LIGHT_CYAN}正在安装${RESET} $package ..."
-
+            start_spinner "安装 $package 中..."
+            
             start_time=$(date +%s)
+            $package_manager -y install "$package" --skip-broken > /dev/null 2>&1
+            install_status=$?
+            stop_spinner
 
-            $package_manager -y install "$package" --skip-broken > /dev/null 2>&1 &
-            install_pid=$!
-
-            while [[ $(($(date +%s) - $start_time)) -lt $TIMEOUT ]] && kill -0 $install_pid &>/dev/null; do
-                sleep 1
-            done
-
-            if kill -0 $install_pid &>/dev/null; then
-                read -e -p "$(WARN "$package 的安装时间超过 ${LIGHT_YELLOW}$TIMEOUT 秒${RESET}。是否继续? ${PROMPT_YES_NO}")" continue_install
-                if [ "$continue_install" != "y" ]; then
-                    ERROR "$package 的安装超时。退出脚本。"
-                    exit 1
-                else
-                    continue
-                fi
-            fi
-
-            wait $install_pid
-            if [ $? -ne 0 ]; then
+            if [ $install_status -ne 0 ]; then
                 ERROR "$package 安装失败。请检查系统安装源，然后再次运行此脚本！请尝试手动执行安装: ${LIGHT_BLUE}$package_manager -y install $package${RESET}"
                 exit 1
             fi
         fi
     done
-elif [ "$package_manager" = "apt-get" ] || [ "$package_manager" = "apt" ];then
+elif [ "$package_manager" = "apt" ] || [ "$package_manager" = "apt-get" ];then
+    start_spinner "正在检查依赖安装情况..."
     dpkg --configure -a &>/dev/null
-    $package_manager update &>/dev/null
+    $package_manager -y update &>/dev/null
+    stop_spinner
     for package in "${PACKAGES_APT[@]}"; do
         if $pkg_manager -s "$package" &>/dev/null; then
             INFO "已经安装 $package ..."
         else
             INFO "正在安装 $package ..."
+            start_spinner "安装 $package 中..."
             $package_manager install -y $package > /dev/null 2>&1
-            if [ $? -ne 0 ]; then
+            install_status=$?
+            stop_spinner
+            
+            if [ $install_status -ne 0 ]; then
                 ERROR "安装 $package 失败,请检查系统安装源之后再次运行此脚本！请尝试手动执行安装: ${LIGHT_BLUE}$package_manager -y install $package${RESET}"
                 exit 1
             fi
@@ -468,11 +514,14 @@ if [ "$package_manager" = "dnf" ]; then
     else
         INFO "正在安装Caddy程序，请稍候..."
 
+        start_spinner "安装Caddy中..."
         $package_manager -y install 'dnf-command(copr)' &>/dev/null
         $package_manager -y copr enable @caddy/caddy &>/dev/null
+        stop_spinner
         while [ $attempts -lt $maxAttempts ]; do
+            start_spinner "安装Caddy服务..."
             $package_manager -y install caddy &>/dev/null
-
+            stop_spinner
             if [ $? -ne 0 ]; then
                 ((attempts++))
                 WARN "正在尝试安装Caddy >>> (Attempt: $attempts)"
@@ -483,7 +532,7 @@ if [ "$package_manager" = "dnf" ]; then
                     exit 1
                 fi
             else
-                INFO "已安装 Caddy."
+                INFO "检测到服务 Caddy 已安装"
                 break
             fi
         done
@@ -496,10 +545,14 @@ elif [ "$package_manager" = "yum" ]; then
     else
         INFO "正在安装Caddy程序，请稍候..."
 
+        start_spinner "安装Caddy中..."
         $package_manager -y install yum-plugin-copr &>/dev/null
         $package_manager -y copr enable @caddy/caddy &>/dev/null
+        stop_spinner
         while [ $attempts -lt $maxAttempts ]; do
+            start_spinner "安装Caddy服务..."
             $package_manager -y install caddy &>/dev/null
+            stop_spinner
             if [ $? -ne 0 ]; then
                 ((attempts++))
                 WARN "正在尝试安装Caddy >>> (Attempt: $attempts)"
@@ -510,7 +563,7 @@ elif [ "$package_manager" = "yum" ]; then
                     exit 1
                 fi
             else
-                INFO "已安装 Caddy."
+                INFO "检测到服务 Caddy 已安装"
                 break
             fi
         done
@@ -520,20 +573,37 @@ elif [ "$package_manager" = "yum" ]; then
 
 elif [ "$package_manager" = "apt" ] || [ "$package_manager" = "apt-get" ];then
     dpkg --configure -a &>/dev/null
-    $package_manager update &>/dev/null
     if $pkg_manager -s "caddy" &>/dev/null; then
-        INFO "Caddy 已安装，跳过..."
+        INFO "检测到服务 Caddy 已安装，跳过..."
     else
         INFO "安装 Caddy 请稍等 ..."
+
+        start_spinner "安装Caddy中..."
+        $package_manager -y update &>/dev/null
         $package_manager install -y debian-keyring debian-archive-keyring apt-transport-https &>/dev/null
         curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg &>/dev/null
         curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list &>/dev/null
-        $package_manager update &>/dev/null
+        $package_manager -y update &>/dev/null
         $package_manager install -y caddy &>/dev/null
-        if [ $? -ne 0 ]; then
-            ERROR "安装 Caddy 失败,请检查系统安装源之后再次运行此脚本！请尝试手动执行安装：$package_manager -y install caddy"
-            exit 1
-        fi
+        stop_spinner
+        while [ $attempts -lt $maxAttempts ]; do
+            start_spinner "安装Caddy服务..."
+            $package_manager -y install caddy &>/dev/null
+            stop_spinner
+            if [ $? -ne 0 ]; then
+                ((attempts++))
+                WARN "正在尝试安装Caddy >>> (Attempt: $attempts)"
+
+                if [ $attempts -eq $maxAttempts ]; then
+                    ERROR "Caddy installation failed. Please try installing manually."
+                    echo "命令: $package_manager -y install update && $package_manager -y install caddy"
+                    exit 1
+                fi
+            else
+                INFO "检测到服务 Caddy 已安装"
+                break
+            fi
+        done
     fi
 
     check_caddy
@@ -737,10 +807,15 @@ if [ "$package_manager" = "dnf" ] || [ "$package_manager" = "yum" ]; then
         INFO "正在安装Nginx程序，请稍候..."
         NGINX="nginx-1.24.0-1.el${OSVER}.ngx.x86_64.rpm"
 
+        start_spinner "下载Nginx安装包..."
         rm -f ${NGINX}
         wget http://nginx.org/packages/centos/${OSVER}/x86_64/RPMS/${NGINX} &>/dev/null
+        stop_spinner
+
         while [ $attempts -lt $maxAttempts ]; do
+            start_spinner "安装Nginx服务..."
             $package_manager -y install ${NGINX} &>/dev/null
+            stop_spinner
 
             if [ $? -ne 0 ]; then
                 ((attempts++))
@@ -753,7 +828,7 @@ if [ "$package_manager" = "dnf" ] || [ "$package_manager" = "yum" ]; then
                     exit 1
                 fi
             else
-                INFO "已安装 Nginx."
+                INFO "检测到服务 Nginx 已安装"
                 rm -f ${NGINX}
                 break
             fi
@@ -762,18 +837,31 @@ if [ "$package_manager" = "dnf" ] || [ "$package_manager" = "yum" ]; then
 
     check_nginx
 
-elif [ "$package_manager" = "apt-get" ] || [ "$package_manager" = "apt" ];then
+elif [ "$package_manager" = "apt" ] || [ "$package_manager" = "apt-get" ];then
     dpkg --configure -a &>/dev/null
-    $package_manager update &>/dev/null
     if $pkg_manager -s "nginx" &>/dev/null; then
-        INFO "nginx 已安装，跳过..."
+        INFO "检测到服务 Nginx 已安装，跳过..."
     else
-        INFO "安装 nginx 请稍等 ..."
-        $package_manager install -y nginx > /dev/null 2>&1
-        if [ $? -ne 0 ]; then
-            ERROR "安装 nginx 失败,请检查系统安装源之后再次运行此脚本！请尝试手动执行安装：$package_manager -y install nginx"
-            exit 1
-        fi
+        INFO "安装 Nginx 请稍等 ..."
+        while [ $attempts -lt $maxAttempts ]; do
+            start_spinner "安装Nginx服务..."
+            $package_manager -y update &>/dev/null
+            $package_manager install -y nginx > /dev/null 2>&1
+            stop_spinner
+            if [ $? -ne 0 ]; then
+                ((attempts++))
+                WARN "正在尝试安装Nginx >>> (Attempt: $attempts)"
+
+                if [ $attempts -eq $maxAttempts ]; then
+                    ERROR "Nginx installation failed. Please try installing manually."
+                    echo "命令: $package_manager install -y nginx"
+                    exit 1
+                fi
+            else
+                INFO "检测到服务 Nginx 已安装"
+                break
+            fi
+        done
     fi
 
     check_nginx
@@ -786,7 +874,7 @@ fi
 function CONFIG_NGINX() {
 SEPARATOR "配置Nginx"
 while true; do
-    WARN "自行安装的 Nginx ${LIGHT_RED}请勿执行此操作${RESET}，${LIGHT_BLUE}以防覆盖原有配置${RESET}"
+    WARN "自行安装的 Nginx ${LIGHT_RED}请谨慎执行此操作${RESET}，${LIGHT_BLUE}以防覆盖原有配置${RESET}"
     INFO "${LIGHT_GREEN}>>> 域名解析主机记录(即域名前缀):${RESET} ${LIGHT_CYAN}${REGISTRY_SLD}${RESET}"
     WARN "${LIGHT_GREEN}>>> 只需选择你部署的服务进行解析即可${RESET},${LIGHT_YELLOW}无需将上面提示中所有的主机记录进行解析${RESET}"
     read -e -p "$(WARN "是否配置 Nginx？配置完成后需在DNS服务商解析主机记录 ${PROMPT_YES_NO}")" nginx_conf
@@ -1141,8 +1229,13 @@ if [ "$repo_type" = "centos" ] || [ "$repo_type" = "rhel" ]; then
       while [[ $attempt -lt $MAX_ATTEMPTS ]]; do
         attempt=$((attempt + 1))
         WARN "Docker 未安装，正在进行安装..."
+        start_spinner "添加Docker仓库..."
         yum-config-manager --add-repo $url/$repo_file &>/dev/null
+        stop_spinner
+
+        start_spinner "安装Docker服务..."
         $package_manager -y install docker-ce &>/dev/null
+        stop_spinner
         if [ $? -eq 0 ]; then
             success=true
             break
@@ -1152,9 +1245,11 @@ if [ "$repo_type" = "centos" ] || [ "$repo_type" = "rhel" ]; then
 
       if $success; then
          INFO "Docker 安装成功，版本为：$(docker --version)"
+         start_spinner "启动Docker服务..."
          systemctl restart docker &>/dev/null
+         stop_spinner
          CHECK_DOCKER
-         systemctl enable docker &>/dev/null
+         systemctl enable docker &>/dev/null         
       else
          ERROR "Docker 安装失败，请尝试手动安装"
          exit 1
@@ -1168,9 +1263,12 @@ elif [ "$repo_type" == "ubuntu" ]; then
       while [[ $attempt -lt $MAX_ATTEMPTS ]]; do
         attempt=$((attempt + 1))
         WARN "Docker 未安装，正在进行安装..."
+        start_spinner "添加Docker仓库..."        
         curl -fsSL $url/gpg | sudo apt-key add - &>/dev/null
         add-apt-repository "deb [arch=amd64] $url $(lsb_release -cs) stable" <<< $'\n' &>/dev/null
+        start_spinner "安装Docker服务..."
         $package_manager -y install docker-ce docker-ce-cli containerd.io &>/dev/null
+        stop_spinner
         if [ $? -eq 0 ]; then
             success=true
             break
@@ -1197,9 +1295,12 @@ elif [ "$repo_type" == "debian" ]; then
         attempt=$((attempt + 1))
 
         WARN "Docker 未安装，正在进行安装..."
+        start_spinner "添加Docker仓库..."
         curl -fsSL $url/gpg | sudo apt-key add - &>/dev/null
         add-apt-repository "deb [arch=amd64] $url $(lsb_release -cs) stable" <<< $'\n' &>/dev/null
+        start_spinner "安装Docker服务..."
         $package_manager -y install docker-ce docker-ce-cli containerd.io &>/dev/null
+        stop_spinner
         if [ $? -eq 0 ]; then
             success=true
             break
@@ -1242,7 +1343,9 @@ if ! command -v docker-compose &> /dev/null || [ -z "$(docker-compose --version)
     WARN "Docker Compose 未安装或安装不完整，正在进行安装..."    
     while [ $attempt -lt $MAX_ATTEMPTS ]; do
         attempt=$((attempt + 1))
+        start_spinner "下载Docker Compose..."
         wget --continue -q $url -O $save_path/docker-compose
+        stop_spinner
         if [ $? -eq 0 ]; then
             chmod +x $save_path/docker-compose
             version_check=$(docker-compose --version)
@@ -1301,7 +1404,9 @@ if ! command -v docker &> /dev/null; then
   while [ $attempt -lt $MAX_ATTEMPTS ]; do
     attempt=$((attempt + 1))
     WARN "Docker 未安装，正在进行安装..."
+    start_spinner "安装Docker服务..."
     wget -P "$save_path" "$url" &>/dev/null
+    stop_spinner
     if [ $? -eq 0 ]; then
         success=true
         break
@@ -1383,7 +1488,9 @@ if ! command -v docker-compose &> /dev/null || [ -z "$(docker-compose --version)
     WARN "Docker Compose 未安装或安装不完整，正在进行安装..."    
     while [ $attempt -lt $MAX_ATTEMPTS ]; do
         attempt=$((attempt + 1))
+        start_spinner "下载Docker Compose..."
         wget --continue -q $url -O $save_path/docker-compose
+        stop_spinner
         if [ $? -eq 0 ]; then
             chmod +x $save_path/docker-compose
             version_check=$(docker-compose --version)
@@ -1677,7 +1784,7 @@ function START_CONTAINER() {
     if [ "$modify_config" = "y" ] || [ "$modify_config" = "Y" ]; then
         ADD_DOCKERD_PROXY
     else
-        INFO "拉取服务镜像并启动服务中，请稍等..."
+        INFO "拉取服务镜像并启动服务中..."
     fi
 
     # DOWN_CONFIG函数执行后判断selected_all变量
@@ -1837,19 +1944,20 @@ INFO "请用浏览器访问 UI 面板(此地址只是UI，非加速地址): "
 INFO "公网访问地址: ${UNDERLINE}http://$PUBLIC_IP:50000${RESET}"
 INFO "内网访问地址: ${UNDERLINE}http://$INTERNAL_IP:50000${RESET}"
 INFO
-INFO "服务安装路径: ${LIGHT_BLUE}${PROXY_DIR}${RESET}"
+INFO "加速服务安装路径: ${LIGHT_BLUE}${PROXY_DIR}${RESET}"
 INFO
 INFO "加速服务对应监听端口如下(参考信息):"
 INFO "DockerHub:51000  │  GHCR:52000   │  GCR:53000  │  K8S-GCR:54000"
 INFO "K8S:55000        │  Quay:56000   │  MCR:57000  │  Elastic:58000  │  NVCR:59000"
 INFO
 INFO "作者博客: https://dqzboy.com"
-INFO "技术交流: https://t.me/dqzboyblog"
+INFO "项目交流: https://t.me/Docker_Proxy"
 INFO "代码仓库: https://github.com/dqzboy/Docker-Proxy"
+INFO "合作联系: https://t.me/WiseAidBot"
 INFO
 INFO "若用云服务器并设域名及证书，需在安全组开放80、443端口；否则开放对应服务监听端口"
 INFO
-INFO "AFF: VPS推荐: https://my.racknerd.com/aff.php?aff=12151"
+INFO "VPS推荐(AFF): https://dqzboy.github.io/proxyui/racknerd"
 INFO
 INFO "================================================================"
 }
@@ -1975,10 +2083,11 @@ INFO
 INFO "服务安装路径: ${LIGHT_BLUE}${CMDUI_DIR}${RESET}"
 INFO 
 INFO "作者博客: https://dqzboy.com"
-INFO "技术交流: https://t.me/dqzboyblog"
+INFO "项目交流: https://t.me/Docker_Proxy"
 INFO "代码仓库: https://github.com/dqzboy/Docker-Proxy"
+INFO "合作联系: https://t.me/WiseAidBot"
 INFO
-INFO "VPS推荐: https://my.racknerd.com/aff.php?aff=12151"
+INFO "VPS推荐(AFF): https://dqzboy.github.io/proxyui/racknerd"
 INFO
 INFO "================================================================"
 }
@@ -2091,7 +2200,6 @@ esac
 
 
 function COMP_INST() {
-CHECK_COMPOSE_CMD
 SEPARATOR "安装组件"
 echo -e "1) ${BOLD}安装${LIGHT_GREEN}环境依赖${RESET}"
 echo -e "2) ${BOLD}安装${LIGHT_CYAN}Docker${RESET}"
@@ -2139,6 +2247,7 @@ case $comp_choice in
         CHECK_OS
         CHECK_PACKAGE_MANAGER
         CHECK_PKG_MANAGER
+        CHECK_COMPOSE_CMD
         while true; do
             read -e -p "$(INFO "安装环境确认 [${LIGHT_GREEN}国外输1${RESET} ${LIGHT_YELLOW}国内输2${RESET}] > ")" deploy_compose
             case "$deploy_compose" in
@@ -3102,7 +3211,7 @@ esac
 # 本机Docker代理
 function DOCKER_PROXY() {
 SEPARATOR "Docker服务代理"
-echo -e "1) ${BOLD}${GREEN}添加${RESET}本机Docker代理"
+echo -e "1) ${BOLD}${LIGHT_GREEN}添加${RESET}本机Docker代理"
 echo -e "2) ${BOLD}${YELLOW}移除${RESET}本机Docker代理"
 echo -e "3) ${BOLD}返回${LIGHT_RED}主菜单${RESET}"
 echo -e "0) ${BOLD}退出脚本${RESET}"
@@ -3536,7 +3645,7 @@ echo -e "╔══════════════════════�
 echo -e "║                                                    ║"
 echo -e "║                ${LIGHT_CYAN}欢迎使用Docker-Proxy${RESET}                ║"
 echo -e "║                                                    ║"
-echo -e "║          TG频道: ${UNDERLINE}https://t.me/dqzboyblog${RESET}           ║"
+echo -e "║        TG交流群: ${UNDERLINE}https://t.me/Docker_Proxy${RESET}         ║"
 echo -e "║                                                    ║"
 echo -e "║                                       ${LIGHT_BLUE}by dqzboy${RESET}    ║"
 echo -e "║                                                    ║"

@@ -29,8 +29,6 @@
 ## 📝 准备工作
 ⚠️  **重要**：选择一台国外服务器，并且未被墙。对于域名，无需进行国内备案。你也可以通过一些平台申请免费域名。在一键部署过程中，如果选择安装Caddy，它将自动配置HTTPS。若选择部署Nginx服务，则需要自行申请一个免费的SSL证书，或者通过其他方式来实现SSL加密。
 
-> **高性价比海外 VPS 推荐**：[点击查看](https://dqzboy.github.io/proxyui/racknerd) 
-
 <details>
 <summary><strong>免费域名证书申请</strong></summary>
 <div>
@@ -61,6 +59,10 @@
 ---
 
 > **部署过程中出现的问题或者疑问，请点击这里 [问题总结](Issue/issue.md)，查看是否有你遇到的情况！尝试先自己解决。**
+
+<a href="https://dqzboy.github.io/proxyui/racknerd" target="_blank">
+    <img src="https://github.com/user-attachments/assets/88f7dd6c-cb5e-4fdb-ba6b-d882d39cba8c" alt="高性价比海外 VPS 推荐" title="点击查看">
+</a>
 
 ---
 
